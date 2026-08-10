@@ -17,18 +17,32 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 
 def start_health_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    print(f"Health server running on port {port}")
+    port = int(os.environ.get("PORT", "10000"))
+
+    print(f"Starting health server on port {port}", flush=True)
+
+    server = HTTPServer(
+        ("0.0.0.0", port),
+        HealthHandler
+    )
+
+    print(f"Health server running on port {port}", flush=True)
+
     server.serve_forever()
 
 
-# Start HTTP health server for Render
-threading.Thread(target=start_health_server, daemon=True).start()
+print("========== ATLAS AI STARTING ==========", flush=True)
 
-# Start Telegram bot
+threading.Thread(
+    target=start_health_server,
+    daemon=True
+).start()
+
+print("Creating Telegram application...", flush=True)
+
 app = create_bot()
 
-print("Atlas AI Bot Started...")
+print("Telegram application created!", flush=True)
+print("Atlas AI Bot Started...", flush=True)
 
 app.run_polling()
