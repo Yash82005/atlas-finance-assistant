@@ -16,3 +16,11 @@ SessionLocal = sessionmaker(
 )
 
 Base = declarative_base()
+
+
+def init_db():
+    from app.database import models
+
+    Base.metadata.create_all(bind=engine)
+
+    print("✅ Database tables initialized", flush=True)

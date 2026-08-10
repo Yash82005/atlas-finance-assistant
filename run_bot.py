@@ -3,6 +3,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from app.bot.bot import create_bot
+from app.database.database import init_db
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -41,6 +42,9 @@ threading.Thread(
     target=start_health_server,
     daemon=True
 ).start()
+
+print("Initializing database...", flush=True)
+init_db()
 
 print("Creating Telegram application...", flush=True)
 
