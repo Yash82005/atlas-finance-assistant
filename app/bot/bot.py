@@ -50,8 +50,16 @@ async def start(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
+    print("🔥 /start RECEIVED FROM TELEGRAM", flush=True)
+
     telegram_user = update.effective_user
     telegram_id = str(telegram_user.id)
+
+    print(
+        f"Telegram user: {telegram_id}",
+        flush=True
+    )
+
 
     user = get_or_create_user(
         telegram_id=telegram_id,

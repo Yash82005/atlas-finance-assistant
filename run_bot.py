@@ -6,6 +6,7 @@ from app.bot.bot import create_bot
 
 
 class HealthHandler(BaseHTTPRequestHandler):
+
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
@@ -17,7 +18,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 
 def start_health_server():
-    port = int(os.environ.get("PORT", "10000"))
+    port = int(os.environ.get("PORT", 10000))
 
     print(f"Starting health server on port {port}", flush=True)
 
@@ -26,7 +27,10 @@ def start_health_server():
         HealthHandler
     )
 
-    print(f"Health server running on port {port}", flush=True)
+    print(
+        f"Health server running on port {port}",
+        flush=True
+    )
 
     server.serve_forever()
 
@@ -43,6 +47,11 @@ print("Creating Telegram application...", flush=True)
 app = create_bot()
 
 print("Telegram application created!", flush=True)
-print("Atlas AI Bot Started...", flush=True)
+print("Atlas AI Bot Started!", flush=True)
+print("Starting Telegram polling...", flush=True)
 
-app.run_polling()
+app.run_polling(
+    drop_pending_updates=False
+)
+
+print("Telegram polling stopped!", flush=True)
