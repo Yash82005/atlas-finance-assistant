@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 
 from telegram import Update
@@ -9,17 +10,16 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 from app.config.settings import settings
 from app.ai.gemini_client import client
 
 from app.services.user_service import get_or_create_user
-
 from app.services.conversation_service import (
     save_message,
     get_recent_messages,
 )
-
 from app.ai.intent_detector import detect_financial_intent
 
 from app.services.finance_service import get_stock_price
@@ -38,7 +38,6 @@ from app.database.database import SessionLocal
 from app.database.models import User
 
 from app.services.briefing_service import generate_briefing
-from telegram.request import HTTPXRequest
 
 
 # =========================================================
@@ -49,7 +48,6 @@ async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-
     print("🔥 /start RECEIVED FROM TELEGRAM", flush=True)
 
     telegram_user = update.effective_user
@@ -59,7 +57,6 @@ async def start(
         f"Telegram user: {telegram_id}",
         flush=True
     )
-
 
     user = get_or_create_user(
         telegram_id=telegram_id,
@@ -81,7 +78,11 @@ async def start(
             "• Financial news\n"
             "• Your watchlist\n"
             "• Personalized briefings\n\n"
-            "Use /briefing for your personalized financial briefing."
+            "Commands:\n"
+            "• /briefing — Get your briefing\n"
+            "• /watchlist — View your watchlist\n"
+            "• /myprofile — View your profile\n"
+            "• /help — Show help"
         )
 
         return
@@ -136,7 +137,6 @@ async def handle_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-
     user_message = update.message.text.strip()
     telegram_id = str(update.effective_user.id)
 
@@ -809,7 +809,7 @@ Financial interests: {interests_text}
 ## PERSONALIZATION RULES
 
 1. Use the user's role and financial interests when
-   relevant to the question.
+   relevant.
 
 2. Adjust explanations to the user's experience level.
 
@@ -839,12 +839,52 @@ Financial interests: {interests_text}
 Answer naturally and concisely.
 """
 
-        response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=prompt,
-        )
+        # =================================================
+        # GEMINI REQUEST WITH QUOTA ERROR HANDLING
+        # =================================================
 
-        assistant_message = response.text
+        try:
+
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt,
+            )
+
+            assistant_message = response.text
+
+        except Exception as e:
+
+            print("========== GEMINI ERROR ==========")
+            print(type(e).__name__)
+            print(str(e))
+            print("==================================")
+
+            error_text = str(e)
+
+            if (
+                "429" in error_text
+                or "RESOURCE_EXHAUSTED" in error_text
+            ):
+
+                assistant_message = (
+                    "⚠️ Atlas AI has temporarily reached "
+                    "its AI request limit.\n\n"
+                    "Please try again in a little while.\n\n"
+                    "You can still use:\n"
+                    "• Stock prices\n"
+                    "• Company information\n"
+                    "• Financial news\n"
+                    "• Watchlist\n"
+                    "• Profile\n"
+                    "• Personalized briefing"
+                )
+
+            else:
+
+                assistant_message = (
+                    "⚠️ I couldn't generate an AI response "
+                    "right now. Please try again."
+                )
 
         save_message(
             telegram_id=telegram_id,
@@ -880,15 +920,18 @@ async def briefing(
     telegram_id = str(update.effective_user.id)
 
     try:
+
         user = get_or_create_user(
             telegram_id=telegram_id,
             name=update.effective_user.first_name
         )
 
         if not user.onboarding_completed:
+
             await update.message.reply_text(
                 "Please complete your profile setup first."
             )
+
             return
 
         await update.message.reply_text(
@@ -910,6 +953,7 @@ async def briefing(
         )
 
     except Exception as e:
+
         print("========== BRIEFING ERROR ==========")
         print(type(e).__name__)
         print(str(e))
@@ -921,67 +965,104 @@ async def briefing(
             "Please try again."
         )
 
+
+# =========================================================
+# SET BRIEFING TIME
+# =========================================================
+
 async def set_briefing(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
     telegram_id = str(update.effective_user.id)
 
-    # Check that a time was provided
     if not context.args:
+
         await update.message.reply_text(
             "⏰ Please provide a time.\n\n"
             "Example:\n"
             "/setbriefing 09:00"
         )
+
         return
 
     briefing_time = context.args[0]
 
     # Validate HH:MM format
-    import re
+    if not re.match(
+        r"^(?:[01]\d|2[0-3]):[0-5]\d$",
+        briefing_time
+    ):
 
-    if not re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", briefing_time):
         await update.message.reply_text(
             "❌ Invalid time format.\n\n"
-            "Please use HH:MM format.\n"
-            "Example: /setbriefing 09:00"
+            "Please use HH:MM, for example:\n"
+            "/setbriefing 09:00"
         )
+
         return
 
-    # Update database
     db = SessionLocal()
 
     try:
+
         user = (
             db.query(User)
-            .filter(User.telegram_id == telegram_id)
+            .filter(
+                User.telegram_id == telegram_id
+            )
             .first()
         )
 
         if not user:
+
             await update.message.reply_text(
-                "❌ User profile not found."
+                "❌ User profile not found. "
+                "Please use /start first."
             )
+
             return
 
         user.briefing_time = briefing_time
+
         db.commit()
 
+        await update.message.reply_text(
+            f"✅ Your daily briefing time has been "
+            f"set to {briefing_time}."
+        )
+
+    except Exception as e:
+
+        db.rollback()
+
+        print(
+            "Set briefing error:",
+            type(e).__name__,
+            str(e)
+        )
+
+        await update.message.reply_text(
+            "❌ I couldn't update your briefing time."
+        )
+
     finally:
+
         db.close()
 
-    await update.message.reply_text(
-        f"✅ Your daily briefing time has been set to "
-        f"{briefing_time}."
-    )
+
+# =========================================================
+# SCHEDULED BRIEFING
+# =========================================================
 
 async def scheduled_briefing(
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     db = SessionLocal()
 
     try:
+
         users = (
             db.query(User)
             .filter(
@@ -999,8 +1080,6 @@ async def scheduled_briefing(
                 continue
 
             try:
-                # Generate personalized briefing
-                from app.services.briefing_service import generate_briefing
 
                 assistant_message = generate_briefing(
                     user.telegram_id
@@ -1023,75 +1102,21 @@ async def scheduled_briefing(
                 )
 
             except Exception as e:
+
                 print(
                     f"❌ Briefing failed for "
-                    f"{user.telegram_id}: {e}"
+                    f"{user.telegram_id}: "
+                    f"{type(e).__name__}: {e}"
                 )
 
     finally:
+
         db.close()
-async def set_briefing(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    telegram_id = str(update.effective_user.id)
 
-    if not context.args:
-        await update.message.reply_text(
-            "Usage:\n"
-            "/setbriefing 09:00\n\n"
-            "Example:\n"
-            "/setbriefing 18:30"
-        )
-        return
 
-    briefing_time = context.args[0]
-
-    # Validate HH:MM format
-    import re
-
-    if not re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", briefing_time):
-        await update.message.reply_text(
-            "❌ Invalid time format.\n\n"
-            "Please use HH:MM, for example:\n"
-            "/setbriefing 09:00"
-        )
-        return
-
-    db = SessionLocal()
-
-    try:
-        user = (
-            db.query(User)
-            .filter(User.telegram_id == telegram_id)
-            .first()
-        )
-
-        if not user:
-            await update.message.reply_text(
-                "❌ User profile not found. Please use /start first."
-            )
-            return
-
-        user.briefing_time = briefing_time
-        db.commit()
-
-        await update.message.reply_text(
-            f"✅ Your daily briefing time has been set to "
-            f"{briefing_time}."
-        )
-
-    except Exception as e:
-        db.rollback()
-
-        print("Set briefing error:", type(e).__name__, str(e))
-
-        await update.message.reply_text(
-            "❌ I couldn't update your briefing time."
-        )
-
-    finally:
-        db.close()
+# =========================================================
+# MY PROFILE
+# =========================================================
 
 async def myprofile(
     update: Update,
@@ -1105,12 +1130,15 @@ async def myprofile(
     )
 
     try:
+
         interests = (
             json.loads(user.interests)
             if user.interests
             else []
         )
+
     except (json.JSONDecodeError, TypeError):
+
         interests = []
 
     watchlist = get_watchlist(
@@ -1121,54 +1149,63 @@ async def myprofile(
         "👤 Your Atlas AI Profile\n\n"
         f"Name: {user.name or 'Not set'}\n"
         f"Role: {user.role or 'Not set'}\n"
-        f"Interests: {', '.join(interests) if interests else 'Not set'}\n"
-        f"Watchlist: {', '.join(watchlist) if watchlist else 'Empty'}\n"
-        f"Briefing time: {user.briefing_time or '09:00'}"
+        f"Interests: "
+        f"{', '.join(interests) if interests else 'Not set'}\n"
+        f"Watchlist: "
+        f"{', '.join(watchlist) if watchlist else 'Empty'}\n"
+        f"Briefing time: "
+        f"{user.briefing_time or 'Not set'}"
     )
 
-    await update.message.reply_text(message)
+    await update.message.reply_text(
+        message
+    )
 
+
+# =========================================================
+# HELP COMMAND
+# =========================================================
 
 async def help_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     message = (
         "🤖 Atlas AI Help\n\n"
+
         "📈 Stocks\n"
         "• What is the price of NVDA?\n"
         "• Tell me about Apple\n"
         "• Show me financial news\n\n"
-        
+
         "📋 Watchlist\n"
         "• Add NVDA to my watchlist\n"
         "• Remove NVDA from my watchlist\n"
         "• Show my watchlist\n\n"
-        
+
         "📊 Personalized Briefing\n"
-        "• /briefing — Get your personalized financial briefing\n\n"
-        
+        "• /briefing — Get your personalized briefing\n"
+        "• /setbriefing 09:00 — Set daily briefing time\n\n"
+
         "👤 Profile\n"
         "• /myprofile — View your profile\n\n"
-        
+
         "❓ Help\n"
         "• /help — Show this help message\n\n"
-        
-        "💡 Atlas AI provides educational financial information "
-        "and does not provide guaranteed investment returns."
+
+        "💡 Atlas AI provides educational financial "
+        "information and does not guarantee investment returns."
     )
 
-    await update.message.reply_text(message)
+    await update.message.reply_text(
+        message
+    )
 
 
-async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    print("========== TELEGRAM ERROR ==========")
-    print(type(context.error).__name__)
-    print(str(context.error))
-    print("====================================")
+# =========================================================
+# WATCHLIST COMMAND
+# =========================================================
 
 async def watchlist_command(
     update: Update,
@@ -1177,11 +1214,13 @@ async def watchlist_command(
     telegram_id = str(update.effective_user.id)
 
     try:
+
         watchlist = get_watchlist(
             telegram_id=telegram_id
         )
 
         if watchlist:
+
             message = (
                 "📋 Your Watchlist\n\n"
                 + "\n".join(
@@ -1189,26 +1228,44 @@ async def watchlist_command(
                     for symbol in watchlist
                 )
             )
+
         else:
+
             message = (
                 "📋 Your Watchlist is empty.\n\n"
                 "Add a stock by saying:\n"
                 "\"add NVDA to my watchlist\""
             )
 
-        await update.message.reply_text(message)
+        await update.message.reply_text(
+            message
+        )
 
     except Exception as e:
-        print("Watchlist command error:", type(e).__name__, str(e))
+
+        print(
+            "Watchlist command error:",
+            type(e).__name__,
+            str(e)
+        )
 
         await update.message.reply_text(
             "❌ I couldn't retrieve your watchlist right now."
         )
 
-async def scheduled_alerts(context: ContextTypes.DEFAULT_TYPE):
+
+# =========================================================
+# SCHEDULED ALERTS
+# =========================================================
+
+async def scheduled_alerts(
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     db = SessionLocal()
 
     try:
+
         users = (
             db.query(User)
             .filter(
@@ -1219,8 +1276,12 @@ async def scheduled_alerts(context: ContextTypes.DEFAULT_TYPE):
         )
 
         for user in users:
+
             try:
-                from app.services.alert_service import check_watchlist_alerts
+
+                from app.services.alert_service import (
+                    check_watchlist_alerts
+                )
 
                 alerts = check_watchlist_alerts(
                     telegram_id=user.telegram_id,
@@ -1245,6 +1306,7 @@ async def scheduled_alerts(context: ContextTypes.DEFAULT_TYPE):
                     )
 
             except Exception as e:
+
                 print(
                     f"❌ Alert failed for "
                     f"{user.telegram_id}: "
@@ -1252,7 +1314,36 @@ async def scheduled_alerts(context: ContextTypes.DEFAULT_TYPE):
                 )
 
     finally:
+
         db.close()
+
+
+# =========================================================
+# TELEGRAM ERROR HANDLER
+# =========================================================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    print(
+        "========== TELEGRAM ERROR =========="
+    )
+
+    print(
+        type(context.error).__name__
+    )
+
+    print(
+        str(context.error)
+    )
+
+    print(
+        "===================================="
+    )
+
+
 # =========================================================
 # CREATE BOT
 # =========================================================
@@ -1260,20 +1351,23 @@ async def scheduled_alerts(context: ContextTypes.DEFAULT_TYPE):
 def create_bot():
 
     request = HTTPXRequest(
-    connect_timeout=30.0,
-    read_timeout=30.0,
-    write_timeout=30.0,
-    pool_timeout=30.0,
-)
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+    )
 
     application = (
-    Application.builder()
-    .token(settings.TELEGRAM_BOT_TOKEN)
-    .request(request)
-    .build()
-)
+        Application.builder()
+        .token(settings.TELEGRAM_BOT_TOKEN)
+        .request(request)
+        .build()
+    )
 
+    # -----------------------------------------------------
     # /start
+    # -----------------------------------------------------
+
     application.add_handler(
         CommandHandler(
             "start",
@@ -1281,56 +1375,101 @@ def create_bot():
         )
     )
 
+    # -----------------------------------------------------
     # /briefing
+    # -----------------------------------------------------
+
     application.add_handler(
         CommandHandler(
             "briefing",
             briefing
         )
     )
-    application.add_handler(
-    CommandHandler(
-        "watchlist",
-        watchlist_command
-    )
-    )
-    application.add_handler(
-    CommandHandler(
-        "myprofile",
-        myprofile
-    )
-)
+
+    # -----------------------------------------------------
+    # /watchlist
+    # -----------------------------------------------------
 
     application.add_handler(
-    CommandHandler(
-        "help",
-        help_command
+        CommandHandler(
+            "watchlist",
+            watchlist_command
+        )
     )
-)
-    application.add_handler(
-    CommandHandler(
-        "setbriefing",
-        set_briefing
-    )
-)
 
+    # -----------------------------------------------------
+    # /myprofile
+    # -----------------------------------------------------
+
+    application.add_handler(
+        CommandHandler(
+            "myprofile",
+            myprofile
+        )
+    )
+
+    # -----------------------------------------------------
+    # /help
+    # -----------------------------------------------------
+
+    application.add_handler(
+        CommandHandler(
+            "help",
+            help_command
+        )
+    )
+
+    # -----------------------------------------------------
+    # /setbriefing
+    # -----------------------------------------------------
+
+    application.add_handler(
+        CommandHandler(
+            "setbriefing",
+            set_briefing
+        )
+    )
+
+    # -----------------------------------------------------
     # Normal messages
+    # -----------------------------------------------------
+
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             handle_message
         )
     )
+
+    # -----------------------------------------------------
+    # Scheduled personalized briefing
+    # Runs every 60 seconds
+    # -----------------------------------------------------
+
     application.job_queue.run_repeating(
-    scheduled_briefing,
-    interval=60,
-    first=10
-)
+        scheduled_briefing,
+        interval=60,
+        first=10
+    )
+
+    # -----------------------------------------------------
+    # Scheduled watchlist alerts
+    # Runs every 5 minutes
+    # -----------------------------------------------------
+
     application.job_queue.run_repeating(
-    scheduled_alerts,
-    interval=300,
-    first=20
-)
-    application.add_error_handler(error_handler)
+        scheduled_alerts,
+        interval=300,
+        first=20
+    )
+
+    # -----------------------------------------------------
+    # Error handler
+    # -----------------------------------------------------
+
+    application.add_error_handler(
+        error_handler
+    )
 
     return application
+
